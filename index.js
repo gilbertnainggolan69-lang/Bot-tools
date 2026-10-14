@@ -1,20 +1,34 @@
+cd ~/Bot-tools
+cat > index.js << 'EOF'
 require('./config.js')
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
 const P = require('pino')
 const fs = require('fs')
 const path = require('path')
+const readline = require('readline')
 
-// BIKIN FOLDER PLUGIN
 if (!fs.existsSync('./plugins')) fs.mkdirSync('./plugins')
+
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+const question = (t) => new Promise((res) => rl.question(t, res))
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('session')
     const sock = makeWASocket({
         logger: P({ level: 'silent' }),
         auth: state,
-        printQRInTerminal: true,
-        markOnlineOnConnect: global.mode!== 'gilbert'
+        printQRInTerminal: false,
+        markOnlineOnConnect: false
     })
+
+    if (!sock.authState.creds.registered) {
+        console.log('\n=== BOT-TOOLS GILBERT PAIRING MODE ===')
+        let phoneNumber = await question('MASUKIN NOMOR BOT LU (628xxxxx): ')
+        phoneNumber = phoneNumber.replace(/[^0-9]/g, '')
+        const code = await sock.requestPairingCode(phoneNumber)
+        console.log(`\nKODE PAIRING LU: ${code}`)
+        console.log('Buka WA > Perangkat Tertaut > Tautkan dgn nomor telepon > Masukin kode ini\n')
+    }
 
     sock.ev.on('creds.update', saveCreds)
 
@@ -24,7 +38,8 @@ async function startBot() {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
             if (shouldReconnect) startBot()
         } else if (connection === 'open') {
-            console.log(`BOT ${global.botName} AKTIF - MODE: ${global.mode}`)
+            console.log(`✅ BOT ${global.botName} AKTIF - MODE: ${global.mode}`)
+            try { rl.close() } catch {}
         }
     })
 
@@ -42,84 +57,51 @@ async function startBot() {
         const args = body.slice(prefix.length).trim().split(/ +/)
         const command = args.shift().toLowerCase()
         const text = args.join(" ")
-        const isOwner = global.owner.includes(senderNumber) || global.owner.includes('62' + senderNumber.slice(1))
+        const isOwner = global.owner.includes(senderNumber)
 
-        console.log(`[${command}] dari ${senderNumber}`)
-
-        // ===== MENU OWNER =====
         if (command === 'owner') {
-            const vcard = 'BEGIN:VCARD\n' +
-                          'VERSION:3.0\n' +
-                          'FN:Gilbert Owner\n' +
-                          'ORG:Bot-tools;\n' +
-                          'TEL;type=CELL;type=VOICE;waid=6285820673526:+62 858-2067-3526\n' +
-                          'END:VCARD'
+            const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:Gilbert Owner\nORG:Bot-tools;\nTEL;type=CELL;type=VOICE;waid=6285820673526:+62 858-2067-3526\nEND:VCARD'
             await sock.sendMessage(from, { contacts: { displayName: 'Gilbert Owner', contacts: [{ vcard }] } })
-            await sock.sendMessage(from, { text: `Itu owner gue bang, chat aja 👆\nwa.me/6285820673526` })
+            await sock.sendMessage(from, { text: `Owner gue nih 👆\nwa.me/6285820673526` })
         }
 
         if (command === 'menu') {
-            const menuText = `╭─ *${global.botName}* ─
-│ Mode: ${global.mode.toUpperCase()}
-│ Prefix: ${global.prefix} /.
-├─ OWNER MENU
-│.addplugin <nama> (reply kode)
-│.delplugin <nama>
-│!owner
-├─ TOOLS MENU
-│!brat <teks>
-│!sticker (reply foto)
-│!ping
-╰─ Created by Gilbert`
+            const menuText = `╭─ *${global.botName}* ─\n│ Mode: ${global.mode.toUpperCase()}\n│ Owner: wa.me/6285820673526\n├─ OWNER MENU\n│.addplugin <nama> (reply kode)\n│.delplugin <nama>\n│!owner\n├─ TOOLS MENU\n│!brat <teks>\n│!sticker (reply foto)\n│!ping |!menu\n╰─ Created by Gilbert`
             await sock.sendMessage(from, { text: menuText })
         }
 
         if (command === 'ping') {
-            await sock.sendMessage(from, { text: `Pong! 🏓 Bot Aktif` })
+            await sock.sendMessage(from, { text: `Pong! 🏓 Bot Aktif mode ${global.mode}` })
         }
 
-        // ===== ADD PLUGIN =====
         if (command === 'addplugin') {
             if (!isOwner) return sock.sendMessage(from, { text: `Khusus owner bro!` })
             if (!text) return sock.sendMessage(from, { text: `Contoh:.addplugin brat` })
-            const code = msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || body.split('\n').slice(1).join('\n')
-            if (!code) return sock.sendMessage(from, { text: `Reply kode yang mau dijadiin plugin atau ketik di bawah nama file:\n.addplugin tes\nconsole.log("halo")` })
+            const quoted = m.messages[0].message.extendedTextMessage?.contextInfo?.quotedMessage
+            const code = quoted?.conversation || quoted?.extendedTextMessage?.text || body.split('\n').slice(1).join('\n')
+            if (!code) return sock.sendMessage(from, { text: `Reply kode pluginnya` })
             const fileName = text.endsWith('.js')? text : text + '.js'
             fs.writeFileSync(`./plugins/${fileName}`, code)
-            await sock.sendMessage(from, { text: `✅ Plugin ${fileName} berhasil ditambahkan!` })
+            await sock.sendMessage(from, { text: `✅ Plugin ${fileName} ditambahkan!` })
         }
 
-        // ===== DEL PLUGIN =====
         if (command === 'delplugin') {
             if (!isOwner) return sock.sendMessage(from, { text: `Khusus owner bro!` })
-            if (!text) return sock.sendMessage(from, { text: `Contoh:.delplugin brat` })
             const fileName = text.endsWith('.js')? text : text + '.js'
-            const filePath = `./plugins/${fileName}`
-            if (!fs.existsSync(filePath)) return sock.sendMessage(from, { text: `Plugin ${fileName} gak ada!` })
-            fs.unlinkSync(filePath)
-            await sock.sendMessage(from, { text: `🗑️ Plugin ${fileName} berhasil dihapus!` })
+            const fp = `./plugins/${fileName}`
+            if (!fs.existsSync(fp)) return sock.sendMessage(from, { text: `Gak ada plugin ${fileName}` })
+            fs.unlinkSync(fp)
+            await sock.sendMessage(from, { text: `🗑️ Plugin ${fileName} dihapus!` })
         }
 
-        // ===== BRAT =====
         if (command === 'brat') {
-            if (!text) return sock.sendMessage(from, { text: `Contoh:!brat halo gilbert` })
-            // pake API brat gratis, biar gak ribet canvas
-            const bratUrl = `https://brat.caliphdev.com/api/brat?text=${encodeURIComponent(text)}`
-            await sock.sendMessage(from, { sticker: { url: bratUrl }, packname: global.botName })
+            if (!text) return sock.sendMessage(from, { text: `Contoh:!brat gilbert ganteng` })
+            const url = `https://brat.caliphdev.com/api/brat?text=${encodeURIComponent(text)}`
+            await sock.sendMessage(from, { sticker: { url }, packname: global.botName })
         }
-
-        // LOAD PLUGIN LUAR
-        fs.readdirSync('./plugins').forEach(file => {
-            if (file.endsWith('.js')) {
-                try {
-                    const plugin = require(path.join(__dirname, 'plugins', file))
-                    if (typeof plugin === 'function') plugin(sock, { from, command, args, text, sender, isOwner })
-                } catch (e) {}
-            }
-        })
     })
 }
 
 startBot()
-
-Tempel ini?
+EOF
+node index.js
